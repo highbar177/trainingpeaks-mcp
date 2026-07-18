@@ -156,6 +156,21 @@ class TestCreateWorkoutInput:
                 distance_km=1001,
             )
 
+    def test_distance_km_alone_is_valid(self):
+        """distance_km alone should satisfy the duration/structure requirement."""
+        result = CreateWorkoutInput(
+            date="2025-06-01",
+            sport="Run",
+            title="10k Run",
+            distance_km=10,
+        )
+        assert result.distance_km == 10
+        assert result.duration_minutes is None
+
+    def test_requires_duration_distance_or_structure(self):
+        with pytest.raises(ValidationError):
+            CreateWorkoutInput(date="2025-06-01", sport="Run", title="Test")
+
     def test_tss_planned_valid(self):
         result = CreateWorkoutInput(
             date="2025-06-01",
