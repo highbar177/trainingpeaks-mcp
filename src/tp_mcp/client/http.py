@@ -115,7 +115,14 @@ class TPClient:
     # Class-level caches: persist across instances within the MCP server process
     _cached_athlete_id: int | None = None
     _cached_user_data: dict | None = None
+    _cached_user_data_at: float = 0.0
     _shared_token_cache: TokenCache | None = None
+
+    # How long to trust the cached /users/v3/user response (which includes the
+    # coach's athlete roster) before refetching. A long-running MCP server
+    # process would otherwise never see an athlete connected after the first
+    # fetch, since the cache had no expiry.
+    USER_DATA_CACHE_TTL = 300.0
 
     @classmethod
     def _get_token_cache(cls) -> TokenCache:
@@ -552,17 +559,31 @@ class TPClient:
         """Set the athlete ID."""
         self._athlete_id = value
 
-    async def _get_user_data(self) -> dict | None:
-        """Get user data, using class-level cache to avoid redundant API calls."""
-        if TPClient._cached_user_data is not None:
+    async def _get_user_data(self, *, force_refresh: bool = False) -> dict | None:
+        """Get user data, using a time-limited class-level cache.
+
+        The cache is refreshed after USER_DATA_CACHE_TTL seconds so a
+        long-running MCP server process picks up athlete roster changes
+        (e.g. a newly connected athlete) rather than serving the snapshot
+        from the first call forever. Pass force_refresh=True to bypass the
+        TTL and refetch immediately.
+        """
+        cache_age = time.monotonic() - TPClient._cached_user_data_at
+        if (
+            not force_refresh
+            and TPClient._cached_user_data is not None
+            and cache_age < TPClient.USER_DATA_CACHE_TTL
+        ):
             return TPClient._cached_user_data
 
         response = await self.get("/users/v3/user")
         if not response.success or not response.data:
-            return None
+            # Serve a stale cache over a hard failure if we have one.
+            return TPClient._cached_user_data
 
         user_data = response.data.get("user", response.data)
         TPClient._cached_user_data = user_data
+        TPClient._cached_user_data_at = time.monotonic()
         return user_data
 
     async def ensure_athlete_id(self) -> int | None:

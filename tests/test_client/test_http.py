@@ -165,6 +165,74 @@ class TestEnsureAthleteId:
         client.get.assert_not_called()
 
 
+class TestUserDataCacheTTL:
+    """Tests for the time-limited cache on _get_user_data.
+
+    A long-running MCP server process must eventually pick up athlete
+    roster changes (e.g. a newly connected athlete) rather than serving
+    the snapshot from the first call forever.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        TPClient._cached_user_data = None
+        TPClient._cached_user_data_at = 0.0
+        yield
+        TPClient._cached_user_data = None
+        TPClient._cached_user_data_at = 0.0
+
+    @pytest.mark.asyncio
+    async def test_serves_cache_within_ttl(self):
+        client = TPClient()
+        client.get = AsyncMock(return_value=APIResponse(success=True, data={"user": {"personId": 1}}))
+        first = await client._get_user_data()
+        assert first == {"personId": 1}
+
+        client.get = AsyncMock()  # should not be called again
+        second = await client._get_user_data()
+
+        assert second == {"personId": 1}
+        client.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refetches_after_ttl_expires(self):
+        TPClient._cached_user_data = {"personId": 1}
+        TPClient._cached_user_data_at = time.monotonic() - TPClient.USER_DATA_CACHE_TTL - 1
+
+        client = TPClient()
+        client.get = AsyncMock(return_value=APIResponse(success=True, data={"user": {"personId": 2}}))
+
+        result = await client._get_user_data()
+
+        assert result == {"personId": 2}
+        client.get.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_bypasses_ttl(self):
+        TPClient._cached_user_data = {"personId": 1}
+        TPClient._cached_user_data_at = time.monotonic()  # freshly cached
+
+        client = TPClient()
+        client.get = AsyncMock(return_value=APIResponse(success=True, data={"user": {"personId": 2}}))
+
+        result = await client._get_user_data(force_refresh=True)
+
+        assert result == {"personId": 2}
+        client.get.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_serves_stale_cache_on_refetch_failure(self):
+        TPClient._cached_user_data = {"personId": 1}
+        TPClient._cached_user_data_at = time.monotonic() - TPClient.USER_DATA_CACHE_TTL - 1
+
+        client = TPClient()
+        client.get = AsyncMock(return_value=APIResponse(success=False, message="down"))
+
+        result = await client._get_user_data()
+
+        assert result == {"personId": 1}
+
+
 class TestSharedTokenCache:
     """Tests for shared TokenCache across TPClient instances."""
 
